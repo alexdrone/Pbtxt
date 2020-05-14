@@ -54,7 +54,7 @@ final class PbtxtTests: XCTestCase {
       let executor: Executor
       let node_repeated: [Node]
     }
-    var pbtxt = """
+    let pbtxt = """
     executor {  num_threads: 2 }
     node {
       process: "scale"
@@ -75,6 +75,8 @@ final class PbtxtTests: XCTestCase {
     XCTAssert(result1.executor.num_threads == 2)
     XCTAssert(result1.node_repeated[0].process == "scale")
     XCTAssert(result1.node_repeated[1].process == "translate")
+    // Test decode.
+    print(try! Pbtxt.encode(object: result1))
   }
 
 }

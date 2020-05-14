@@ -17,6 +17,12 @@ public struct Pbtxt {
     return result
   }
   
+  public static func write(dictionary: [String: Any]) -> String {
+    var pbtxt = ""
+    _write(buffer: &pbtxt, dictionary: dictionary)
+    return pbtxt
+  }
+  
   static func decode<T>(
     type: T.Type,
     pbtxt: String,
@@ -27,7 +33,16 @@ public struct Pbtxt {
     return try decoder.decode(type, from: json)
   }
   
-  // MARK: - Internals
+  static func encode<T>(
+    object: T,
+    encoder: JSONEncoder = JSONEncoder()
+  ) throws -> String where T : Encodable {
+    let jsonRaw = try encoder.encode(object)
+    let jsonDict = try JSONSerialization.jsonObject(with: jsonRaw, options: []) as? [String: Any]
+    return write(dictionary: jsonDict ?? [:])
+  }
+  
+  // MARK: - Internal (Parsing)
   
   /// Represents the a key in the protobuf.
   public typealias Key = String
@@ -225,5 +240,41 @@ public struct Pbtxt {
     }
     // ...otherwise we continue to tokenization.
     return _tokenize(chars: &chars, tokens: currentTokens)
+  }
+  
+  // MARK: - Internal (Writing)
+  
+  static func _write(buffer: inout String, dictionary: [String: Any], indent: UInt = 0) {
+    // Compute the indentation level.
+    let indentString = (0...indent).reduce("") { result, _ in result + "  " }
+    
+    // Get all of the keys (if `_repeated` keys are available, pick those).
+    let keys = dictionary.keys.filter {
+      return !dictionary.keys.contains("\($0)_repeated")
+    }
+    for key in keys {
+      // Get the key value.
+      let fields: [Any] = dictionary[key] as? [Any] ?? [dictionary[key]!]
+      
+      // Treats all of the fiels as repeated.
+      for field in fields {
+        // Write the key in the buffer.
+        let writeableKey = key.replacingOccurrences(of: "_repeated", with: "")
+        buffer += "\n\(indentString)\(writeableKey): "
+        
+        // Nested object.
+        if let object = field as? [String: Any] {
+          buffer += "{"
+          _write(buffer: &buffer, dictionary: object, indent: indent + 1)
+          buffer += "\n\(indentString)}"
+
+        // Scalar value.
+        } else if let number = field as? NSNumber {
+          buffer += "\(number)"
+        } else if let string = field as? String {
+          buffer += "\"\(string)\""
+        }
+      }
+    }
   }
 }
