@@ -118,7 +118,7 @@ public struct Pbtxt {
   
   // MARK: - Const
   
-  public static let repeatedFieldSuffix: String = "_repeated"
+  public static let repeatedFieldSuffix: String = "*"
     
   /// Returns the *repeated* version for the key passed as argument.
   public static func repeatedField(_ key: String) -> String {
@@ -141,7 +141,8 @@ public struct Pbtxt {
     case boolean(value: Bool)
     /// A nested object value. (e.g. `key { foo: 2 }`)
     case message(fields: Pbtxt.Message)
-
+    /// An array of scalars.
+    case array(elements: [RhsScalarValue])
     /// Returns this rhs as a scalar value (if applicable).
     var scalarValue: Any? {
       switch self {
@@ -156,8 +157,14 @@ public struct Pbtxt {
       if case .message(let object) = self { return object }
       return nil
     }
+    /// Returns this rhs as a array of primitives.
+    var arrayValue: [RhsScalarValue]? {
+      if case .array(let elements) = self { return elements }
+      return nil
+    }
   }
   
+  @inline(__always)
   static func _parse(tokens: inout [Token], message: inout Pbtxt.Message) throws {
     // Whether we are currently evaluating a left-hand side expr (lhs) or a right-hand one.
     var lhs: Bool = true
@@ -167,34 +174,43 @@ public struct Pbtxt {
     // Consume all tokens.
     while !tokens.isEmpty {
       let token = tokens.removeFirst()
+      // Skips optional assignment tokens.
+      if case .assignment = token { continue }
+    
       if lhs {
         lhs.toggle()
+        
         switch token {
         // lhs-terminal (key).
         case .scalar(let rawValue):
           key = rawValue
           if message[key] == nil { message[key] = [] }
+          
         // Pop nested object context.
-        case .end: return
-  
+        case .messageEnd: return
         default:
           throw Pbtxt.Error.unableToParsePbtxt(message: "lhs-expr expected.")
         }
       // rhs.
       } else {
         assert(!key.isEmpty)
-  
         lhs.toggle()
+
         switch token {
         // rhs-terminal (scalar).
         case .scalar(let rawValue):
           message[key]?.append(try _parseRhsScalar(rawValue))
+          
         // Push nested message context.
-        case .begin:
+        case .messageBegin:
           var buffer: Pbtxt.Message = [:]
           try _parse(tokens: &tokens, message: &buffer)
           message[key]?.append(.message(fields: buffer))
-        
+          
+        // Parse array of primitives.
+        case .arrayBegin:
+          message[key]?.append(try _parseRhsArray(tokens: &tokens))
+          
         default:
           throw Pbtxt.Error.unableToParsePbtxt(message: "rhs-expr expected.")
         }
@@ -202,6 +218,28 @@ public struct Pbtxt {
     }
   }
   
+  static func _parseRhsArray(tokens: inout [Token]) throws -> Pbtxt.Rhs {
+    var array: [RhsScalarValue] = []
+    while !tokens.isEmpty {
+      let token = tokens.removeFirst()
+      switch token {
+      // rhs-terminal (scalar).
+      case .scalar(let rawValue):
+        guard let value = try _parseRhsScalar(rawValue).scalarValue as? RhsScalarValue else {
+          continue
+        }
+        array.append(value)
+      // Skip separator.
+      case .arraySeparator: continue
+      // Pop the array context.
+      case .arrayEnd: return .array(elements: array)
+      default: break
+      }
+    }
+    throw Pbtxt.Error.unableToParsePbtxt(message: "invalid token in array context.")
+  }
+  
+  @inline(__always)
   static func _parseRhsScalar(_ rawValue: String) throws -> Pbtxt.Rhs {
     // The terminal is a double quoted string.
     var char = "\""
@@ -230,6 +268,7 @@ public struct Pbtxt {
     throw Pbtxt.Error.unableToParsePbtxt(message: "unexpected rhs-terminal: \(rawValue)")
   }
   
+  @inline(__always)
   static func _merge(message: Pbtxt.Message, output: inout [String: Any]) {
     for (key, fields) in message {
       var outputValues: [Any] = []
@@ -239,6 +278,11 @@ public struct Pbtxt {
           var buffer: [String: Any] = [:]
           _merge(message: object, output: &buffer)
           outputValues.append(buffer)
+          continue
+        }
+        // The field is a array of primitives.
+        if let array = field.arrayValue {
+          outputValues.append(array)
           continue
         }
         // The field is a scalar value.
@@ -256,45 +300,50 @@ public struct Pbtxt {
   enum Token: CustomStringConvertible {
     /// A token representing a key.
     case scalar(raw: String)
-    /// An open bracket.
-    case begin
-    /// A closed bracket.
-    case end
-  
+    /// lhs assignment token (optional).
+    case assignment
+    /// An open bracket (begin message context).
+    case messageBegin
+    /// A closed bracket (end message context).
+    case messageEnd
+    /// An open squared bracket.
+    case arrayBegin
+    /// An closed squared bracket.
+    case arrayEnd
+    /// Array elements separator.
+    case arraySeparator
+    
     /// Returns the raw value if this is a `token` type, `nil` otherwise.
     var rawValue: String? {
       if case .scalar(let raw) = self { return raw }
       return nil
     }
-    /// Whether this token represent an open bracket `{`.
-    var isBeginBlock: Bool {
-      if case .begin = self { return true }
-      return false
-    }
-    /// Whether this token represent a closed bracket `}`.
-    var isEndBlock: Bool {
-      if case .end = self { return true }
-      return false
-    }
     /// A textual representation of this instance.
     var description: String {
       switch self {
       case .scalar(let string): return "\(string)"
-      case .begin: return "{"
-      case .end: return "}"
+      case .assignment: return ":"
+      case .messageBegin: return "{"
+      case .messageEnd: return "}"
+      case .arrayBegin: return "["
+      case .arrayEnd: return "]"
+      case .arraySeparator: return ","
       }
     }
   }
-  
+    
+  @inline(__always)
   static func _tokenize(chars: inout [Character], tokens: [Token] = []) -> [Token] {
     var currentTokens = tokens
     var match: [Character] = []
     var delimiter: Token?
     var isMatchingDoubleQuotedString = false
     var isMatchingComment = false
+
     while !chars.isEmpty {
       let char: Character = chars.removeFirst()
       assert(char.isASCII, "asciipb support only.")
+  
       // Matching a `"..."` string.
       // TODO: Support escaping.
       if isMatchingDoubleQuotedString {
@@ -302,18 +351,32 @@ public struct Pbtxt {
         if char == "\"" { break }
         continue
       }
+      
       // Begin matching a `"..."` string.
       if char == "\"" {
         match.append(char)
         isMatchingDoubleQuotedString = true
         continue
       }
+      
       // Skip whitespaces.
       if char.isWhitespace { continue }
       if char == "#" { isMatchingComment = true; break }
-      if char == ":" { break }
-      if char == "{" { delimiter = .begin; break }
-      if char == "}" { delimiter = .end; break }
+      if char == ":" { delimiter = .assignment; break }
+      if char == "{" { delimiter = .messageBegin; break }
+      if char == "}" { delimiter = .messageEnd; break }
+      if char == "," { delimiter = .arraySeparator; break }
+      
+      // Matching array (e.g. a `key: [1, 2, 3]`) begins.
+      if char == "[", let token = currentTokens.last, case .assignment = token {
+        delimiter = .arrayBegin
+        break
+      }
+      // End array.
+      if char == "]", let token = currentTokens.last, ["[", ","].contains(token.description) {
+        delimiter = .arrayEnd
+        break
+      }
       // Valid character to be added to the match.
       match.append(char)
     }
@@ -339,7 +402,7 @@ public struct Pbtxt {
     
     // Get all of the keys (if `_repeated` keys are available, pick those).
     let keys = dictionary.keys.filter {
-      return !dictionary.keys.contains(repeatedField($0))
+      return $0.hasSuffix(Pbtxt.repeatedFieldSuffix) || !dictionary.keys.contains(repeatedField($0))
     }
     for key in keys {
       // Wrap all of the fields as repeated.
@@ -367,4 +430,26 @@ public struct Pbtxt {
       }
     }
   }
+  
+  static private func _printTokens(_ tokens: [Token]) {
+    print(tokens.map { $0.description }.joined(separator: "•"))
+  }
+}
+
+// MARK: RhsScalarValue
+
+public protocol RhsScalarValue {
+  // Marker for all of the scalar terminals in a pbtxt.
+}
+
+extension String: RhsScalarValue {
+  // Match with double quoted strings in a pbtxt.
+}
+
+extension Double: RhsScalarValue {
+  // Match with a number in a pbtxt.
+}
+
+extension Bool: RhsScalarValue {
+  // Match with a boolean litteral in a pbtxt.
 }
