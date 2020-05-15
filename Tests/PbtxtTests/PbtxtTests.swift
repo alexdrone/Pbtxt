@@ -2,9 +2,28 @@ import XCTest
 @testable import Pbtxt
 
 final class PbtxtTests: XCTestCase {
+  let pbtxt = """
+    node:{
+      process:"scale"
+      [options]:{
+        max_overrun:1
+        ctx:"ctx1"
+      }
+    }
+    node:{
+      process:"translate"
+      [options]:{
+        ctx:"ctx2"
+        max_overrun:2
+      }
+    }
+    executor:{
+      num_threads:2
+      array_1:[1,2,3]
+    }
+    """
   
     func testTokenization() {
-      
       var array = Array("key: 12")
       var tokens = Pbtxt._tokenize(chars: &array)
       XCTAssert(tokens.count == 3)
@@ -45,55 +64,47 @@ final class PbtxtTests: XCTestCase {
       tokens = Pbtxt._tokenize(chars: &array)
       XCTAssert(tokens.count == 14)
       XCTAssert(tokens[0].rawValue == "array")
-
     }
   
   func testDecode() {
-    struct Executor: Codable {
-      let num_threads: Int
-      let array_1: [UInt]
-    }
-    struct Options: Codable {
-      let ctx: String;
-      let max_overrun: UInt
-    }
-    struct Node: Codable {
-       enum CodingKeys: String, CodingKey { case process = "process", options = "[options]" }
-       let process: String;
-       let options: Options
-     }
-
-    struct Result: Codable {
-      enum CodingKeys: String, CodingKey { case executor = "executor", nodes = "node*" } // *: repeated-field suffix.
-      let executor: Executor
-      let nodes: [Node]
-    }
-    let pbtxt = """
-    executor {
-      num_threads: 2
-      array_1: [1,2,3]
-    }
-    node {
-      process: "scale"
-      [options] {
-        ctx: "ctx1"
-        max_overrun: 0x00001
-      }
-    }
-    node {
-      process: "translate"
-      [options] {
-        ctx: "ctx2"
-        max_overrun: 2
-      }
-    }
-    """
-    let result1 = try! Pbtxt.decode(type: Result.self, pbtxt: pbtxt)
-    XCTAssert(result1.executor.num_threads == 2)
-    XCTAssert(result1.nodes[0].process == "scale")
-    XCTAssert(result1.nodes[1].process == "translate")
-    // Test decode.
-    print(try! Pbtxt.encode(object: result1))
+    let result = try! Pbtxt.decode(type: Result.self, pbtxt: pbtxt)
+    XCTAssert(result.executor.num_threads == 2)
+    XCTAssert(result.nodes[0].process == "scale")
+    XCTAssert(result.nodes[0].options.ctx == "ctx1")
+    XCTAssert(result.nodes[1].process == "translate")
+    XCTAssert(result.executor.array_1 == [1,2,3])
   }
+  
+  func testWrite() {
+    let result = try! Pbtxt.decode(type: Result.self, pbtxt: pbtxt)
+    let string = try! Pbtxt.encode(object: result)
+    print(string)
+  }
+  
+  func testParseBigPbtxt() {
+    let result = try! Pbtxt.parse(pbtxt: bigPbtxt)
+    let string = Pbtxt.write(dictionary: result)
+  }
+}
 
+//MARK: - Codable Demo
+
+struct Executor: Codable {
+  let num_threads: Int
+  let array_1: [UInt]
+}
+struct Options: Codable {
+  let ctx: String;
+  let max_overrun: UInt
+}
+struct Node: Codable {
+   enum CodingKeys: String, CodingKey { case process = "process", options = "[options]" }
+   let process: String;
+   let options: Options
+ }
+
+struct Result: Codable {
+  enum CodingKeys: String, CodingKey { case executor = "executor", nodes = "node*" } // *: repeated-field suffix.
+  let executor: Executor
+  let nodes: [Node]
 }

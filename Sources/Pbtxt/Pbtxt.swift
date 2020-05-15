@@ -36,11 +36,12 @@ public struct Pbtxt {
       var chars = Array(line)
       tokens.append(contentsOf: Pbtxt._tokenize(chars: &chars))
     }
-    var dict: Pbtxt.Message = [:]
-    try _parse(tokens: &tokens, message: &dict)
-    var result: [String: Any] = [:]
-    _merge(message: dict, output: &result)
-    return result
+    var message: Pbtxt.Message = [:]
+    try _parse(tokens: &tokens, message: &message)
+    
+    var dictionary: [String: Any] = [:]
+    _merge(message: message, output: &dictionary)
+    return dictionary
   }
   
   /// Write a dictionary into protobuf text-format.
@@ -142,13 +143,16 @@ public struct Pbtxt {
     /// A nested object value. (e.g. `key { foo: 2 }`)
     case message(fields: Pbtxt.Message)
     /// An array of scalars.
-    case array(elements: [RhsScalarValue])
+    case array(elements: [PbtxtScalarConvertible])
+    /// A enum value.
+    case `enum`(value: PbtxtEnum)
     /// Returns this rhs as a scalar value (if applicable).
-    var scalarValue: Any? {
+    var scalarValue: PbtxtScalarConvertible? {
       switch self {
       case .string(let value): return value
       case .number(let value): return value
       case .boolean(let value): return value
+      case .enum(let value): return value
       default: return nil
       }
     }
@@ -158,7 +162,7 @@ public struct Pbtxt {
       return nil
     }
     /// Returns this rhs as a array of primitives.
-    var arrayValue: [RhsScalarValue]? {
+    var arrayValue: [PbtxtScalarConvertible]? {
       if case .array(let elements) = self { return elements }
       return nil
     }
@@ -218,14 +222,15 @@ public struct Pbtxt {
     }
   }
   
+  @inline(__always)
   static func _parseRhsArray(tokens: inout [Token]) throws -> Pbtxt.Rhs {
-    var array: [RhsScalarValue] = []
+    var array: [PbtxtScalarConvertible] = []
     while !tokens.isEmpty {
       let token = tokens.removeFirst()
       switch token {
       // rhs-terminal (scalar).
       case .scalar(let rawValue):
-        guard let value = try _parseRhsScalar(rawValue).scalarValue as? RhsScalarValue else {
+        guard let value = try _parseRhsScalar(rawValue).scalarValue else {
           continue
         }
         array.append(value)
@@ -261,10 +266,10 @@ public struct Pbtxt {
     if rawValue == "true" { return .boolean(value: true) }
     if rawValue == "false" { return .boolean(value: false) }
     // An enum value.
-    if rawValue.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
-      return .string(value: rawValue)
+    if rawValue.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
+      return .enum(value: PbtxtEnum(rawValue: rawValue))
     }
-
+  
     throw Pbtxt.Error.unableToParsePbtxt(message: "unexpected rhs-terminal: \(rawValue)")
   }
   
@@ -398,34 +403,53 @@ public struct Pbtxt {
   // MARK: - Internal (Writing)
   
   static func _write(buffer: inout String, dictionary: [String: Any], indent: UInt = 0) {
-    let pre = (0...indent).reduce("") { result, _ in result + "  " }
+    // Compute indentation (for pretty-format).
+    let lineIndent = "\n" + (0...indent).reduce("") { result, _ in result + "  " }
+    let quote = "\""
+    let whitespace = " "
     
-    // Get all of the keys (if `_repeated` keys are available, pick those).
-    let keys = dictionary.keys.filter {
-      return $0.hasSuffix(Pbtxt.repeatedFieldSuffix) || !dictionary.keys.contains(repeatedField($0))
+    // All of the keys ( `*` keys are picked when applicable).
+    let keys = dictionary.keys.filter { key in
+      key.hasSuffix(Pbtxt.repeatedFieldSuffix) || !dictionary.keys.contains(repeatedField(key))
     }
+    
     for key in keys {
-      // Wrap all of the fields as repeated.
-      let fields: [Any] = dictionary[key] as? [Any] ?? [dictionary[key]!]
-      for field in fields {
-        // Write the key in the buffer.
-        let writeableKey = key.replacingOccurrences(of: Pbtxt.repeatedFieldSuffix, with: "")
-        buffer += "\n\(pre)\(writeableKey): "
-
-        // Nested message.
+      guard let rhs = dictionary[key] else { continue }
+      
+      // Array of primitives.
+      if let array = rhs as? [CustomStringConvertible], !key.hasSuffix(Pbtxt.repeatedFieldSuffix) {
+        // key: [...]
+        let scalars = array
+          .compactMap { scalar in scalar.description }
+          .joined(separator: Token.arraySeparator.description)
+        buffer += lineIndent + key + Token.assignment.description + whitespace
+        buffer += Token.arrayBegin.description + scalars + Token.arrayEnd.description
+        continue
+      }
+      
+      // All fields as `*` repeated.
+      for field in (rhs as? [Any] ?? [rhs]) {
+        // `key:` format.
+        let pbtxtKey = key.replacingOccurrences(of: Pbtxt.repeatedFieldSuffix, with: "")
+        buffer += lineIndent + pbtxtKey
+    
+        // {...}
         if let object = field as? [String: Any] {
-          buffer += "{"
+          buffer += whitespace + Token.messageBegin.description
           _write(buffer: &buffer, dictionary: object, indent: indent + 1)
-          buffer += "\n\(pre)}"
+          buffer += lineIndent + Token.messageEnd.description
           continue
         }
         
-        // Scalar values.
-        if let number = field as? NSNumber {
-          buffer += "\(number)"
+        buffer += Token.assignment.description + whitespace
+        // "string"
+        if let string = field as? String {
+          buffer += quote + string + quote
           continue
-        } else if let string = field as? String {
-          buffer += "\"\(string)\""
+        }
+        // Any other value (number and enums).
+        if let value = field as? CustomStringConvertible {
+          buffer += value.description
         }
       }
     }
@@ -436,20 +460,26 @@ public struct Pbtxt {
   }
 }
 
-// MARK: RhsScalarValue
+// MARK: - PbtxtEnum
 
-public protocol RhsScalarValue {
-  // Marker for all of the scalar terminals in a pbtxt.
+public struct PbtxtEnum: PbtxtScalarConvertible, Codable {
+  let rawValue: String
+  /// A textual representation of this instance.
+  public var description: String { rawValue }
 }
 
-extension String: RhsScalarValue {
+// MARK: - RhsScalarValue
+
+public protocol PbtxtScalarConvertible: CustomStringConvertible { }
+
+extension String: PbtxtScalarConvertible {
   // Match with double quoted strings in a pbtxt.
 }
 
-extension Double: RhsScalarValue {
+extension Double: PbtxtScalarConvertible {
   // Match with a number in a pbtxt.
 }
 
-extension Bool: RhsScalarValue {
+extension Bool: PbtxtScalarConvertible {
   // Match with a boolean litteral in a pbtxt.
 }
