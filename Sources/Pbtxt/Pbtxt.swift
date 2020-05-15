@@ -2,7 +2,33 @@ import Foundation
 
 public struct Pbtxt {
   
-  public static func parse(pbtxt: String) -> [String: Any] {
+  public enum Error: Swift.Error {
+    /// There was an error while parsing the protobuf text.
+    case unableToParsePbtxt(message: String)
+  }
+  
+  /// Parse a protobuf text-format file into a dictionary.
+  /// Since the parser is unaware of the schema, there are 2 keys being decoded for every field:
+  /// - `key`: non-repeated field version.
+  /// - `Pbtxt.repeatedField(key)`: repeated field version (where the associated value is an array).
+  ///
+  /// *Example* Given the *pbtxt* below:
+  /// ```
+  /// executor {
+  ///   num_threads: 2
+  ///   [some.proto.ext]: "__"
+  /// }
+  /// model { id: "node_1" }
+  /// model { id: "node_2" }
+  /// ```
+  /// The parsed dictionary yields:
+  /// ```
+  /// let dict = try Pbtxt.parse(pbtxt: src)
+  /// dict["executor"] // {num_threads: 2, ..}
+  /// dict["model"] // {id: "node_1"}
+  /// dict[Pbtxt.repeatedField("model")] // [{id: "node_1"}, {id: "node_2"}]
+  /// ```
+  public static func parse(pbtxt: String) throws -> [String: Any]  {
     let lines = pbtxt.components(separatedBy: .newlines)
     // Tokenize the file.
     var tokens: [Token] = []
@@ -10,29 +36,77 @@ public struct Pbtxt {
       var chars = Array(line)
       tokens.append(contentsOf: Pbtxt._tokenize(chars: &chars))
     }
-    var dict: Pbtxt.Object = [:]
-    _parse(tokens: &tokens, object: &dict)
+    var dict: Pbtxt.Message = [:]
+    try _parse(tokens: &tokens, message: &dict)
     var result: [String: Any] = [:]
-    _merge(input: dict, output: &result)
+    _merge(message: dict, output: &result)
     return result
   }
   
+  /// Write a dictionary into protobuf text-format.
   public static func write(dictionary: [String: Any]) -> String {
     var pbtxt = ""
     _write(buffer: &pbtxt, dictionary: dictionary)
     return pbtxt
   }
+
+  // MARK: - Codable
   
+  /// Returns a value of the type you specify, decoded from a *pbtxt* file.
+  /// - parameter type: The type of the value to decode from the supplied JSON object.
+  /// - parameter pbtxt: The protobuf text format file to decode.
+  ///
+  /// Since the parser is unaware of the schema, there are 2 keys being decoded for every field:
+  /// - `key`: non-repeated field version.
+  /// - `Pbtxt.repeatedField(key)`: repeated field version (where the associated value is an array).
+  /// Match the desired field type in your `CondingKeys`
+  ///
+  /// *Example* Given the *pbtxt* below:
+  /// ```
+  /// executor {
+  ///   num_threads: 2
+  ///   [some.proto.ext]: "__"
+  /// }
+  /// model { id: "node_1" }
+  /// model { id: "node_2" }
+  /// ```
+  ///
+  /// A matching model would be:
+  /// ```
+  /// struct Executor: Codable {
+  ///   enum CodingKeys: String, CodingKey {
+  ///      case numThreads = "process"
+  ///      case ext = "[some.proto.ext]"
+  ///   }
+  ///   let numThreads: UInt
+  ///   let ext: String
+  /// }
+  ///
+  /// struct Model: Codable {
+  ///   let id: String
+  /// }
+  ///
+  /// struct Obj: Codable {
+  ///   enum CodingKeys: String, CodingKey {
+  ///     case executor = "executor"
+  ///     case models = Pbtxt.repeatedField("model")
+  ///   }
+  ///   let executor: Executor
+  ///   let models: [Model]
+  /// }
+  /// ```
+  ///
   static func decode<T>(
     type: T.Type,
     pbtxt: String,
     decoder: JSONDecoder = JSONDecoder()
   ) throws -> T where T : Decodable {
-    let dict = parse(pbtxt: pbtxt)
+    let dict = try parse(pbtxt: pbtxt)
     let json = try JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted)
     return try decoder.decode(type, from: json)
   }
   
+  /// Encodes an object into its protobuf text-format representation.
   static func encode<T>(
     object: T,
     encoder: JSONEncoder = JSONEncoder()
@@ -42,12 +116,19 @@ public struct Pbtxt {
     return write(dictionary: jsonDict ?? [:])
   }
   
+  // MARK: - Const
+  
+  public static let repeatedFieldSuffix: String = "_repeated"
+    
+  /// Returns the *repeated* version for the key passed as argument.
+  public static func repeatedField(_ key: String) -> String {
+    key.contains(Pbtxt.repeatedFieldSuffix) ? key : "\(key)\(Pbtxt.repeatedFieldSuffix)"
+  }
+  
   // MARK: - Internal (Parsing)
   
-  /// Represents the a key in the protobuf.
-  public typealias Key = String
   /// A map between protobuf text keys are the allowed values.
-  public typealias Object = [Key: [Rhs]]
+  public typealias Message = [String: [Rhs]]
 
   /// All of the possible rhs expression for a protobuf text values.
   ///  - todo: Support homogeneous arrays such as  `key: [1, 2.4, 3]`
@@ -59,9 +140,7 @@ public struct Pbtxt {
     /// A terminal node with a boolean value (e.g. `key: true`, `key: false`).
     case boolean(value: Bool)
     /// A nested object value. (e.g. `key { foo: 2 }`)
-    case object(fields: Pbtxt.Object)
-    /// A malformed rhs.
-    case error
+    case message(fields: Pbtxt.Message)
 
     /// Returns this rhs as a scalar value (if applicable).
     var scalarValue: Any? {
@@ -73,68 +152,57 @@ public struct Pbtxt {
       }
     }
     /// Returns this rhs as an object (if applicable).
-    var objectValue: Pbtxt.Object? {
-      if case .object(let object) = self { return object }
+    var messageValue: Pbtxt.Message? {
+      if case .message(let object) = self { return object }
       return nil
     }
   }
   
-  static func _merge(input: Pbtxt.Object, output: inout [String: Any]) {
-    for (key, values) in input {
-      var outputValues: [Any] = []
-      for value in values {
-        // The value is an object.
-        if let object = value.objectValue {
-          var dict: [String: Any] = [:]
-          _merge(input: object, output: &dict)
-          outputValues.append(dict)
-        // The value is a scalar value.
-        } else if let scalar = value.scalarValue {
-          outputValues.append(scalar)
-        }
-      }
-      let key_repeated = "\(key)_repeated"
-      output[key_repeated] = outputValues
-      output[key] = outputValues.first
-    }
-  }
-  
-  static func _parse(tokens: inout [Token], object: inout Pbtxt.Object) {
+  static func _parse(tokens: inout [Token], message: inout Pbtxt.Message) throws {
+    // Whether we are currently evaluating a left-hand side expr (lhs) or a right-hand one.
     var lhs: Bool = true
+    // If we already parse a lhs-expr we should have a key.
     var key: String = ""
+    
+    // Consume all tokens.
     while !tokens.isEmpty {
       let token = tokens.removeFirst()
       if lhs {
         lhs.toggle()
         switch token {
-        case .primitive(let rawValue):
+        // lhs-terminal (key).
+        case .scalar(let rawValue):
           key = rawValue
-          if object[key] == nil { object[key] = [] }
+          if message[key] == nil { message[key] = [] }
         // Pop nested object context.
         case .end: return
+  
         default:
-          fatalError("lhs expected (key).")
+          throw Pbtxt.Error.unableToParsePbtxt(message: "lhs-expr expected.")
         }
       // rhs.
       } else {
+        assert(!key.isEmpty)
+  
         lhs.toggle()
         switch token {
-        // Rhs terminal.
-        case .primitive(let rawValue):
-          object[key]?.append(_parseRhsPrimitive(rawValue))
-        // Nested object (recursive call).
+        // rhs-terminal (scalar).
+        case .scalar(let rawValue):
+          message[key]?.append(try _parseRhsScalar(rawValue))
+        // Push nested message context.
         case .begin:
-          var dict: Pbtxt.Object = [:]
-          _parse(tokens: &tokens, object: &dict)
-          object[key]?.append(.object(fields: dict))
+          var buffer: Pbtxt.Message = [:]
+          try _parse(tokens: &tokens, message: &buffer)
+          message[key]?.append(.message(fields: buffer))
+        
         default:
-          fatalError("rhs expected.")
+          throw Pbtxt.Error.unableToParsePbtxt(message: "rhs-expr expected.")
         }
       }
     }
   }
   
-  static func _parseRhsPrimitive(_ rawValue: String) -> Pbtxt.Rhs {
+  static func _parseRhsScalar(_ rawValue: String) throws -> Pbtxt.Rhs {
     // The terminal is a double quoted string.
     var char = "\""
     if rawValue.hasPrefix(char) {
@@ -158,14 +226,36 @@ public struct Pbtxt {
     if rawValue.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
       return .string(value: rawValue)
     }
-    return .error
+
+    throw Pbtxt.Error.unableToParsePbtxt(message: "unexpected rhs-terminal: \(rawValue)")
+  }
+  
+  static func _merge(message: Pbtxt.Message, output: inout [String: Any]) {
+    for (key, fields) in message {
+      var outputValues: [Any] = []
+      for field in fields {
+        // The field is a nested object.
+        if let object = field.messageValue {
+          var buffer: [String: Any] = [:]
+          _merge(message: object, output: &buffer)
+          outputValues.append(buffer)
+          continue
+        }
+        // The field is a scalar value.
+        if let scalar = field.scalarValue {
+          outputValues.append(scalar)
+        }
+      }
+      output[repeatedField(key)] = outputValues
+      output[key] = outputValues.first
+    }
   }
   
   // MARK: - Tokenizer
   
   enum Token: CustomStringConvertible {
     /// A token representing a key.
-    case primitive(raw: String)
+    case scalar(raw: String)
     /// An open bracket.
     case begin
     /// A closed bracket.
@@ -173,7 +263,7 @@ public struct Pbtxt {
   
     /// Returns the raw value if this is a `token` type, `nil` otherwise.
     var rawValue: String? {
-      if case .primitive(let raw) = self { return raw }
+      if case .scalar(let raw) = self { return raw }
       return nil
     }
     /// Whether this token represent an open bracket `{`.
@@ -189,7 +279,7 @@ public struct Pbtxt {
     /// A textual representation of this instance.
     var description: String {
       switch self {
-      case .primitive(let string): return "\(string)"
+      case .scalar(let string): return "\(string)"
       case .begin: return "{"
       case .end: return "}"
       }
@@ -229,7 +319,7 @@ public struct Pbtxt {
     }
 
     if !match.isEmpty {
-      currentTokens.append(.primitive(raw: String(match)))
+      currentTokens.append(.scalar(raw: String(match)))
     }
     if let delimiter = delimiter {
       currentTokens.append(delimiter)
@@ -245,32 +335,32 @@ public struct Pbtxt {
   // MARK: - Internal (Writing)
   
   static func _write(buffer: inout String, dictionary: [String: Any], indent: UInt = 0) {
-    // Compute the indentation level.
-    let indentString = (0...indent).reduce("") { result, _ in result + "  " }
+    let pre = (0...indent).reduce("") { result, _ in result + "  " }
     
     // Get all of the keys (if `_repeated` keys are available, pick those).
     let keys = dictionary.keys.filter {
-      return !dictionary.keys.contains("\($0)_repeated")
+      return !dictionary.keys.contains(repeatedField($0))
     }
     for key in keys {
-      // Get the key value.
+      // Wrap all of the fields as repeated.
       let fields: [Any] = dictionary[key] as? [Any] ?? [dictionary[key]!]
-      
-      // Treats all of the fiels as repeated.
       for field in fields {
         // Write the key in the buffer.
-        let writeableKey = key.replacingOccurrences(of: "_repeated", with: "")
-        buffer += "\n\(indentString)\(writeableKey): "
-        
-        // Nested object.
+        let writeableKey = key.replacingOccurrences(of: Pbtxt.repeatedFieldSuffix, with: "")
+        buffer += "\n\(pre)\(writeableKey): "
+
+        // Nested message.
         if let object = field as? [String: Any] {
           buffer += "{"
           _write(buffer: &buffer, dictionary: object, indent: indent + 1)
-          buffer += "\n\(indentString)}"
-
-        // Scalar value.
-        } else if let number = field as? NSNumber {
+          buffer += "\n\(pre)}"
+          continue
+        }
+        
+        // Scalar values.
+        if let number = field as? NSNumber {
           buffer += "\(number)"
+          continue
         } else if let string = field as? String {
           buffer += "\"\(string)\""
         }
