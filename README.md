@@ -11,19 +11,19 @@ Since the parser is unaware of the schema, there are 2 keys being decoded for ev
 
 *Example* Given the *pbtxt* below:
 ```pbtxt
-executor {
-  num_threads: 2
+layer {
+  dim: 42
   [some.proto.ext]: "__"
 }
-model { id: "node_1" }
-model { id: "node_2" }
+model { id: "id_1" }
+model { id: "id_2" }
 ```
  The parsed dictionary yields:
  ``` swift
 let dict = try Pbtxt.parse(pbtxt: src)
-dict["executor"] // {num_threads: 2, ..}
+dict["layer"] // {dim: 42, ..}
 dict["model"] // {id: "node_1"}
-dict[Pbtxt.repeatedField("model")] // [{id: "node_1"}, {id: "node_2"}]
+dict[Pbtxt.repeatedField("model")] // [{id: "id_1"}, {id: "id_2"}]
 ```
 
 #### `Pbtxt.decode<T: Decodable>(type: T.Type,pbtxt: String) throws -> T`:
@@ -35,12 +35,12 @@ must be reflected in your object `CodingKeys`.
 An example codable object for the above described *pbxt* would be the following;
 
 ```swift
- struct Executor: Codable {
+ struct Layer: Codable {
    enum CodingKeys: String, CodingKey {
-      case numThreads = "process"
+      case dimension = "dim"
       case ext = "[some.proto.ext]"
    }
-   let numThreads: UInt
+   let dimension: UInt
    let ext: String
  }
 
@@ -50,10 +50,10 @@ An example codable object for the above described *pbxt* would be the following;
 
  struct Obj: Codable {
    enum CodingKeys: String, CodingKey {
-     case executor = "executor"
+     case layer = "layer"
      case models = Pbtxt.repeatedField("model")
    }
-   let executor: Executor
+   let layer: Layer
    let models: [Model]
  }
  ```
