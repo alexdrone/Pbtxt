@@ -2,7 +2,7 @@
 
 Schemaless protobuf text parsers.
 
-### `Pbtxt.parse(pbtxt: String) throws -> [String: Any]`:
+#### `Pbtxt.parse(pbtxt: String) throws -> [String: Any]`:
 
 Parse a protobuf text-format file into a dictionary.
 Since the parser is unaware of the schema, there are 2 keys being decoded for every field:
@@ -26,7 +26,7 @@ dict["model"] // {id: "node_1"}
 dict[Pbtxt.repeatedField("model")] // [{id: "node_1"}, {id: "node_2"}]
 ```
 
-### `Pbtxt.decode<T: Decodable>(type: T.Type,pbtxt: String) throws -> T`:
+#### `Pbtxt.decode<T: Decodable>(type: T.Type,pbtxt: String) throws -> T`:
 
 Returns a value of the type you specify, decoded from a *pbtxt* file.
 Since the parser is unaware of the schema, the same consideration about repeated/non-repeated fields described above applies and 
@@ -59,10 +59,10 @@ An example codable object for the above described *pbxt* would be the following;
  ```
 
 
-### `Pbtxt.write(dictionary: [String: Any]) -> String `:
+#### `Pbtxt.write(dictionary: [String: Any]) -> String `:
 
 Write a dictionary into protobuf text-format.
 
- ### `Pbtxt.encode<T: Encodable>(object: T) -> T`:
+#### `Pbtxt.encode<T: Encodable>(object: T) -> T`:
 
 Encodes an object into its protobuf text-format representation.
