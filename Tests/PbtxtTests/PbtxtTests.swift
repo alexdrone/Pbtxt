@@ -84,6 +84,7 @@ final class PbtxtTests: XCTestCase {
   func testParseBigPbtxt() {
     let result = try! Pbtxt.parse(pbtxt: bigPbtxt)
     let string = Pbtxt.write(dictionary: result)
+    //print(string)
   }
 }
 

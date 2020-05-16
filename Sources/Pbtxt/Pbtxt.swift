@@ -120,10 +120,14 @@ public struct Pbtxt {
   // MARK: - Const
   
   public static let repeatedFieldSuffix: String = "*"
+  public static let enumFieldPrefix: String = "enum:"
     
   /// Returns the *repeated* version for the key passed as argument.
   public static func repeatedField(_ key: String) -> String {
     key.contains(Pbtxt.repeatedFieldSuffix) ? key : "\(key)\(Pbtxt.repeatedFieldSuffix)"
+  }
+  public static func enumField(_ key: String) -> String {
+    key.contains(Pbtxt.enumFieldPrefix) ? key : "\(Pbtxt.enumFieldPrefix)\(key)"
   }
   
   // MARK: - Internal (Parsing)
@@ -144,15 +148,12 @@ public struct Pbtxt {
     case message(fields: Pbtxt.Message)
     /// An array of scalars.
     case array(elements: [PbtxtScalarConvertible])
-    /// A enum value.
-    case `enum`(value: PbtxtEnum)
     /// Returns this rhs as a scalar value (if applicable).
     var scalarValue: PbtxtScalarConvertible? {
       switch self {
       case .string(let value): return value
       case .number(let value): return value
       case .boolean(let value): return value
-      case .enum(let value): return value
       default: return nil
       }
     }
@@ -267,7 +268,7 @@ public struct Pbtxt {
     if rawValue == "false" { return .boolean(value: false) }
     // An enum value.
     if rawValue.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
-      return .enum(value: PbtxtEnum(rawValue: rawValue))
+      return .string(value: Pbtxt.enumField(rawValue))
     }
   
     throw Pbtxt.Error.unableToParsePbtxt(message: "unexpected rhs-terminal: \(rawValue)")
@@ -444,7 +445,12 @@ public struct Pbtxt {
         buffer += Token.assignment.description + whitespace
         // "string"
         if let string = field as? String {
-          buffer += quote + string + quote
+          // enum.
+          if string.hasPrefix(Pbtxt.enumFieldPrefix) {
+            buffer += string.replacingOccurrences(of: Pbtxt.enumFieldPrefix, with: "")
+          } else {
+            buffer += quote + string + quote
+          }
           continue
         }
         // Any other value (number and enums).
@@ -462,15 +468,6 @@ public struct Pbtxt {
 
 // MARK: - PbtxtEnum
 
-public struct PbtxtEnum: PbtxtScalarConvertible, Codable {
-  let rawValue: String
-  /// A textual representation of this instance.
-  public var description: String { rawValue }
-  /// Encodes this value into the given encoder.
-  public func encode(to encoder: Encoder) throws {
-    try rawValue.encode(to: encoder)
-  }
-}
 
 // MARK: - RhsScalarValue
 
