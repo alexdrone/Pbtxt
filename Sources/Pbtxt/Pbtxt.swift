@@ -466,6 +466,10 @@ public struct PbtxtEnum: PbtxtScalarConvertible, Codable {
   let rawValue: String
   /// A textual representation of this instance.
   public var description: String { rawValue }
+  /// Encodes this value into the given encoder.
+  func encode(to encoder: Encoder) throws {
+    try rawValue.encode(to: encoder)
+  }
 }
 
 // MARK: - RhsScalarValue
