@@ -97,7 +97,7 @@ public struct Pbtxt {
   /// }
   /// ```
   ///
-  static func decode<T>(
+  public static func decode<T>(
     type: T.Type,
     pbtxt: String,
     decoder: JSONDecoder = JSONDecoder()
@@ -108,7 +108,7 @@ public struct Pbtxt {
   }
   
   /// Encodes an object into its protobuf text-format representation.
-  static func encode<T>(
+  public static func encode<T>(
     object: T,
     encoder: JSONEncoder = JSONEncoder()
   ) throws -> String where T : Encodable {
