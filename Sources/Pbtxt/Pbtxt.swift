@@ -120,7 +120,7 @@ public struct Pbtxt {
   // MARK: - Const
   
   public static let repeatedFieldSuffix: String = "*"
-  public static let enumFieldPrefix: String = "enum:"
+  public static let enumFieldPrefix: String = ":"
     
   /// Returns the *repeated* version for the key passed as argument.
   public static func repeatedField(_ key: String) -> String {
