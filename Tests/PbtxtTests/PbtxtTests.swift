@@ -20,6 +20,7 @@ final class PbtxtTests: XCTestCase {
     executor:{
       num_threads:2
       array_1:[1,2,3]
+      is_valid:true
     }
     """
   
@@ -93,6 +94,7 @@ final class PbtxtTests: XCTestCase {
 struct Executor: Codable {
   let num_threads: Int
   let array_1: [UInt]
+  let is_valid: Bool
 }
 struct Options: Codable {
   let ctx: String;

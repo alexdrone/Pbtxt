@@ -414,7 +414,7 @@ public struct Pbtxt {
       key.hasSuffix(Pbtxt.repeatedFieldSuffix) || !dictionary.keys.contains(repeatedField(key))
     }
     
-    for key in keys {
+    for key in keys.sorted() {
       guard let rhs = dictionary[key] else { continue }
       
       // Array of primitives.
@@ -451,6 +451,10 @@ public struct Pbtxt {
           } else {
             buffer += quote + string + quote
           }
+          continue
+        }
+        if let value = field as? Bool {
+          buffer += value ? "true" : "false"
           continue
         }
         // Any other value (number and enums).
